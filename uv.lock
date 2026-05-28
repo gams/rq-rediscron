@@ -494,9 +494,11 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "shibuya" },
     { name = "tox" },
     { name = "tox-uv" },
+]
+docs = [
+    { name = "shibuya" },
 ]
 
 [package.metadata]
@@ -507,10 +509,10 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "shibuya", specifier = ">=2026.5.19" },
     { name = "tox", specifier = ">=4.55.0" },
     { name = "tox-uv", specifier = ">=1.35.2" },
 ]
+docs = [{ name = "shibuya", specifier = ">=2026.5.19" }]
 
 [[package]]
 name = "shibuya"

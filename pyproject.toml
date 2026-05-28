@@ -31,7 +31,9 @@ path = "rediscron/__meta__.py"
 
 [dependency-groups]
 dev = [
-    "shibuya>=2026.5.19",
     "tox>=4.55.0",
     "tox-uv>=1.35.2",
+]
+docs = [
+    "shibuya>=2026.5.19",
 ]
