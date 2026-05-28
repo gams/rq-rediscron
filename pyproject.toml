@@ -14,6 +14,7 @@ dynamic = ["version"]
 [project.urls]
 Homepage = "https://github.com/gams/rq-rediscron"
 Repository = "https://github.com/gams/rq-rediscron"
+Documentation = "https://rq-rediscron.readthedocs.io/en/latest/"
 
 [build-system]
 requires = ["hatchling"]
