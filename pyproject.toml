@@ -4,7 +4,25 @@ description = "Redis-backed runtime-editable cron scheduler for RQ"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-authors = []
+authors = [
+    {name = "Stefan Berder", email = "code@measureofquality.com"},
+]
+maintainers = [
+    {name = "gams monitoring", email = "code@measureofquality.com"},
+]
+keywords = ["rq", "redis", "cron", "scheduler", "jobs"]
+classifiers=[
+    'Development Status :: 4 - Beta',
+    'Environment :: Console',
+    'Intended Audience :: Developers',
+    'License :: OSI Approved :: MIT License',
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
+    'Programming Language :: Python :: 3.14',
+]
+license-files = ["LICENSE"]
 dependencies = [
     "redis>=5",
     "rq>=2.8",
