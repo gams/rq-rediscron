@@ -19,6 +19,10 @@ buildclean:
 build: buildclean tox
 	uv build
 
+.PHONY: publish
+publish: build
+	uv publish
+
 .PHONY: unittest
 unittest:
 	uv run python -m unittest discover
