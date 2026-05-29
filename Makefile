@@ -1,6 +1,8 @@
 PKG_NAME:="rediscron"
 PKG_VERSION:=$(shell uv tool run hatch version)
 
+SEGMENT =? patch
+
 .PHONY: bump
 bump: test
 	git checkout main
@@ -9,7 +11,8 @@ bump: test
 	uv lock
 	git add uv.lock
 	pkg_ver=$$(uv tool run hatch version); \
-	git commit -m "chore: version bump to $${pkg_ver}"
+	git commit -m "release: bump to $${pkg_ver}"; \
+	git tag -a -v$${pkg_ver} -m "release: bump to $${pkg_ver}"
 
 .PHONY: buildclean
 buildclean:
