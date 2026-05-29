@@ -12,7 +12,7 @@ bump: test
 	git add uv.lock
 	pkg_ver=$$(uv tool run hatch version); \
 	git commit -m "release: bump to $${pkg_ver}"; \
-	git tag -a -v$${pkg_ver} -m "release: bump to $${pkg_ver}"
+	git tag -a v$${pkg_ver} -m "release: bump to $${pkg_ver}"
 
 .PHONY: buildclean
 buildclean:
