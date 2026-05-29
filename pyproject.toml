@@ -1,7 +1,7 @@
 [project]
 name = "rq-rediscron"
 description = "Redis-backed runtime-editable cron scheduler for RQ"
-readme = "README.md"
+readme = "README.rst"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
