@@ -3,9 +3,24 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-rq-rediscron documentation
-==========================
+##############################################
+rq-rediscron - Redis-backed RQ cron scheduling
+##############################################
+
+.. include:: ../README.rst
+   :start-line: 4
+   :end-line: 52
+
+Code
+====
 
 .. automodule:: rediscron.core
    :members:
    :member-order: bysource
+
+Why?
+====
+
+.. include:: ../README.rst
+   :start-line: 56
+   :end-line: 65
