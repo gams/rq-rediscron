@@ -23,9 +23,6 @@ CRON_JOBS_LOCK_KEY = "rq:cron_jobs:lock"
 CRON_JOBS_LAST_UPDATE_KEY = "rq:cron_jobs:last_update"
 CRON_JOBS_EVENTS_CHANNEL = "rq:cron_jobs:events"
 
-ACTIVE_STATUS = "active"
-DELETED_STATUS = "deleted"
-
 _RELEASE_LOCK_SCRIPT = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
     return redis.call("del", KEYS[1])
@@ -74,6 +71,13 @@ def _optional_float(value: Any) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
+
+def _decode_bool(value: Any) -> bool:
+    value = _decode(value)
+    if isinstance(value, bool):
+        return value
+    return bool(int(value))
 
 
 def _optional_datetime(value: Any) -> datetime | None:
@@ -158,7 +162,7 @@ class RedisCronJob(CronJob):
         next_enqueue_time: datetime | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
-        status: str = ACTIVE_STATUS,
+        enabled: bool = True,
     ):
         if not id:
             raise ValueError("RedisCronJob requires an explicit stable id")
@@ -181,7 +185,7 @@ class RedisCronJob(CronJob):
         self.connection = connection
         self.created_at = created_at or now()
         self.updated_at = updated_at or self.created_at
-        self.status = status
+        self.enabled = enabled
 
         if latest_enqueue_time is not None:
             self.latest_enqueue_time = latest_enqueue_time
@@ -219,11 +223,15 @@ class RedisCronJob(CronJob):
             "kwargs": _dumps(self.kwargs),
             "interval": self.interval if self.interval is not None else "",
             "cron": self.cron or "",
-            "latest_enqueue_time": utcformat(self.latest_enqueue_time) if self.latest_enqueue_time else "",
-            "next_enqueue_time": utcformat(self.next_enqueue_time) if self.next_enqueue_time else "",
+            "latest_enqueue_time": utcformat(self.latest_enqueue_time)
+            if self.latest_enqueue_time
+            else "",
+            "next_enqueue_time": utcformat(self.next_enqueue_time)
+            if self.next_enqueue_time
+            else "",
             "created_at": utcformat(self.created_at),
             "updated_at": utcformat(self.updated_at),
-            "status": self.status,
+            "enabled": self.enabled,
         }
         for key in ("job_timeout", "result_ttl", "ttl", "failure_ttl"):
             data[key] = self.job_options.get(key, "")
@@ -261,15 +269,31 @@ class RedisCronJob(CronJob):
             self.next_enqueue_time,
         )
         connection.hset(self.key, mapping=self.to_dict())
-        if self.status == ACTIVE_STATUS:
-            connection.zadd(CRON_JOBS_INDEX_KEY, {self.id: _timestamp(self.next_enqueue_time)})
+        if self.enabled:
+            connection.zadd(
+                CRON_JOBS_INDEX_KEY, {self.id: _timestamp(self.next_enqueue_time)}
+            )
             logging.getLogger(__name__).debug(
-                "Indexed Redis cron job id=%s score=%s", self.id, _timestamp(self.next_enqueue_time)
+                "Indexed Redis cron job id=%s score=%s",
+                self.id,
+                _timestamp(self.next_enqueue_time),
             )
         else:
             connection.zrem(CRON_JOBS_INDEX_KEY, self.id)
-            logging.getLogger(__name__).debug("Removed inactive Redis cron job id=%s from index", self.id)
+            logging.getLogger(__name__).debug(
+                "Removed disabled Redis cron job id=%s from index", self.id
+            )
         self._bump_update(connection, event, self.id)
+
+    def enable(self, pipeline: Any | None = None) -> None:
+        """Enable this cron job and notify running schedulers."""
+        self.enabled = True
+        self.save(pipeline=pipeline, event="enabled")
+
+    def disable(self, pipeline: Any | None = None) -> None:
+        """Disable this cron job and notify running schedulers."""
+        self.enabled = False
+        self.save(pipeline=pipeline, event="disabled")
 
     def refresh(self) -> None:
         """Reload this job from Redis in place.
@@ -305,10 +329,11 @@ class RedisCronJob(CronJob):
         if connection is None:
             raise ValueError("RedisCronJob.delete() requires a Redis connection")
 
-        logging.getLogger(__name__).debug("Deleting Redis cron job id=%s key=%s", self.id, self.key)
+        logging.getLogger(__name__).debug(
+            "Deleting Redis cron job id=%s key=%s", self.id, self.key
+        )
         connection.delete(self.key)
         connection.zrem(CRON_JOBS_INDEX_KEY, self.id)
-        self.status = DELETED_STATUS
         self._bump_update(connection, "deleted", self.id)
 
     def enqueue(self, connection: Redis):
@@ -331,7 +356,9 @@ class RedisCronJob(CronJob):
             self.job_options,
         )
         job = queue.enqueue(self.func, *self.args, **self.kwargs, **self.job_options)
-        logging.getLogger(__name__).info("Enqueued cron job %s to queue %s", self.id, self.queue_name)
+        logging.getLogger(__name__).info(
+            "Enqueued cron job %s to queue %s", self.id, self.queue_name
+        )
         return job
 
     @classmethod
@@ -351,11 +378,15 @@ class RedisCronJob(CronJob):
             raise NoSuchJobError(f"RedisCronJob {id!r} does not exist")
         job = cls.restore(raw_data, connection=connection)
         if job.id != id:
-            raise ValueError(f"Fetched cron job id mismatch: expected {id!r}, got {job.id!r}")
+            raise ValueError(
+                f"Fetched cron job id mismatch: expected {id!r}, got {job.id!r}"
+            )
         return job
 
     @classmethod
-    def restore(cls, raw_data: dict[Any, Any], connection: Redis | None = None) -> "RedisCronJob":
+    def restore(
+        cls, raw_data: dict[Any, Any], connection: Redis | None = None
+    ) -> "RedisCronJob":
         """Restore a `RedisCronJob` from Redis hash data.
 
         Unlike RQ's monitoring-only `CronJob.from_dict()`, this method imports
@@ -363,7 +394,9 @@ class RedisCronJob(CronJob):
         """
         data = _decode_hash(raw_data)
         func_name = str(data["func_name"])
-        logging.getLogger(__name__).debug("Restoring Redis cron job id=%s func=%s", data.get("id"), func_name)
+        logging.getLogger(__name__).debug(
+            "Restoring Redis cron job id=%s func=%s", data.get("id"), func_name
+        )
         func = _import_attribute(func_name)
         return cls(
             id=str(data["id"]),
@@ -383,7 +416,7 @@ class RedisCronJob(CronJob):
             next_enqueue_time=_optional_datetime(data.get("next_enqueue_time")),
             created_at=_optional_datetime(data.get("created_at")) or now(),
             updated_at=_optional_datetime(data.get("updated_at")) or now(),
-            status=str(data.get("status") or ACTIVE_STATUS),
+            enabled=_decode_bool(data["enabled"]),
         )
 
     def set_enqueue_time(self, time: datetime) -> None:
@@ -402,7 +435,10 @@ class RedisCronJob(CronJob):
     def _bump_update(connection: Any, event: str, job_id: str | None = None) -> None:
         update_value = time.time()
         logging.getLogger(__name__).debug(
-            "Bumping Redis cron update marker event=%s job_id=%s value=%s", event, job_id, update_value
+            "Bumping Redis cron update marker event=%s job_id=%s value=%s",
+            event,
+            job_id,
+            update_value,
         )
         connection.set(CRON_JOBS_LAST_UPDATE_KEY, update_value)
         payload = _dumps({"event": event, "job_id": job_id})
@@ -473,6 +509,7 @@ class RedisCronScheduler(CronScheduler):
         ttl: int | None = None,
         failure_ttl: int | None = None,
         meta: dict | None = None,
+        enabled: bool | None = None,
     ) -> RedisCronJob:
         """Create or update one persisted cron job.
 
@@ -503,6 +540,7 @@ class RedisCronScheduler(CronScheduler):
             existing = RedisCronJob.fetch(id, self.connection)
             created_at = existing.created_at
             latest_enqueue_time = existing.latest_enqueue_time
+            enabled = existing.enabled if enabled is None else enabled
             event = "updated"
             self.log.debug(
                 "Updating existing Redis cron job id=%s previous_queue=%s previous_interval=%s previous_cron=%s",
@@ -514,6 +552,7 @@ class RedisCronScheduler(CronScheduler):
         except NoSuchJobError:
             created_at = now()
             latest_enqueue_time = None
+            enabled = True if enabled is None else enabled
             event = "created"
             self.log.debug("Creating new Redis cron job id=%s", id)
 
@@ -534,14 +573,14 @@ class RedisCronScheduler(CronScheduler):
             latest_enqueue_time=latest_enqueue_time,
             created_at=created_at,
             updated_at=now(),
-            status=ACTIVE_STATUS,
+            enabled=enabled,
         )
         cron_job.save(event=event)
         self.log.info("Redis cron job %s id=%s queue=%s", event, id, queue_name)
         return cron_job
 
     def get_jobs(self) -> list[RedisCronJob]:
-        """Return all active jobs currently indexed in Redis.
+        """Return all enabled jobs currently indexed in Redis.
 
         Missing hashes are pruned from the sorted set as stale index entries.
         This makes Redis the source of truth while keeping the index tidy.
@@ -557,11 +596,28 @@ class RedisCronScheduler(CronScheduler):
                 self.log.debug("Pruning stale Redis cron index entry id=%s", job_id)
                 self.connection.zrem(CRON_JOBS_INDEX_KEY, job_id)
                 continue
-            if job.status == ACTIVE_STATUS:
+            if job.enabled:
                 jobs.append(job)
             else:
-                self.log.debug("Skipping inactive Redis cron job id=%s status=%s", job.id, job.status)
-        self.log.debug("Loaded active Redis cron jobs count=%s", len(jobs))
+                self.log.debug("Skipping disabled Redis cron job id=%s", job.id)
+                self.connection.zrem(CRON_JOBS_INDEX_KEY, job_id)
+        self.log.debug("Loaded enabled Redis cron jobs count=%s", len(jobs))
+        return jobs
+
+    def get_all_jobs(self) -> list[RedisCronJob]:
+        """Return all persisted cron jobs, including disabled jobs."""
+        pattern = f"{CRON_JOB_KEY_PREFIX}*"
+        if hasattr(self.connection, "scan_iter"):
+            keys = self.connection.scan_iter(match=pattern)
+        else:
+            keys = self.connection.keys(pattern)
+
+        jobs: list[RedisCronJob] = []
+        for raw_key in sorted(str(_decode(key)) for key in keys):
+            raw_data = self.connection.hgetall(raw_key)
+            if raw_data:
+                jobs.append(RedisCronJob.restore(raw_data, connection=self.connection))
+        self.log.debug("Loaded all Redis cron jobs count=%s", len(jobs))
         return jobs
 
     def enqueue_jobs(self) -> list[RedisCronJob]:
@@ -573,13 +629,16 @@ class RedisCronScheduler(CronScheduler):
         """
         if not self._owns_lock():
             self.log.warning(
-                "RedisCronScheduler %s: not enqueueing jobs because scheduler lock is not owned", self.name
+                "RedisCronScheduler %s: not enqueueing jobs because scheduler lock is not owned",
+                self.name,
             )
             return []
 
         enqueue_time = now()
         enqueued_jobs: list[RedisCronJob] = []
-        due_ids = self.connection.zrangebyscore(CRON_JOBS_INDEX_KEY, "-inf", enqueue_time.timestamp())
+        due_ids = self.connection.zrangebyscore(
+            CRON_JOBS_INDEX_KEY, "-inf", enqueue_time.timestamp()
+        )
         self.log.debug(
             "RedisCronScheduler %s: found due cron jobs count=%s at=%s",
             self.name,
@@ -591,25 +650,35 @@ class RedisCronScheduler(CronScheduler):
             try:
                 job = RedisCronJob.fetch(job_id, self.connection)
             except NoSuchJobError:
-                self.log.debug("Pruning due cron job id=%s because hash is missing", job_id)
+                self.log.debug(
+                    "Pruning due cron job id=%s because hash is missing", job_id
+                )
                 self.connection.zrem(CRON_JOBS_INDEX_KEY, job_id)
                 continue
 
-            if job.status != ACTIVE_STATUS:
-                self.log.debug("Removing inactive due cron job id=%s status=%s", job.id, job.status)
+            if not job.enabled:
+                self.log.debug("Removing disabled due cron job id=%s", job.id)
                 self.connection.zrem(CRON_JOBS_INDEX_KEY, job_id)
                 continue
             if not job.should_run():
                 self.log.debug(
-                    "Due index entry id=%s was not runnable; reindexing next=%s", job.id, job.next_enqueue_time
+                    "Due index entry id=%s was not runnable; reindexing next=%s",
+                    job.id,
+                    job.next_enqueue_time,
                 )
-                self.connection.zadd(CRON_JOBS_INDEX_KEY, {job.id: _timestamp(job.next_enqueue_time)})
+                self.connection.zadd(
+                    CRON_JOBS_INDEX_KEY, {job.id: _timestamp(job.next_enqueue_time)}
+                )
                 continue
 
             job.enqueue(self.connection)
             job.set_enqueue_time(enqueue_time)
             enqueued_jobs.append(job)
-        self.log.debug("RedisCronScheduler %s: enqueued cron jobs count=%s", self.name, len(enqueued_jobs))
+        self.log.debug(
+            "RedisCronScheduler %s: enqueued cron jobs count=%s",
+            self.name,
+            len(enqueued_jobs),
+        )
         return enqueued_jobs
 
     def calculate_sleep_interval(self) -> float:
@@ -620,7 +689,9 @@ class RedisCronScheduler(CronScheduler):
         """
         next_job = self.connection.zrange(CRON_JOBS_INDEX_KEY, 0, 0, withscores=True)
         if not next_job:
-            self.log.debug("RedisCronScheduler %s: no jobs indexed; using max sleep", self.name)
+            self.log.debug(
+                "RedisCronScheduler %s: no jobs indexed; using max sleep", self.name
+            )
             return self.max_sleep_interval
 
         score = float(next_job[0][1])
@@ -629,7 +700,12 @@ class RedisCronScheduler(CronScheduler):
             self.log.debug("RedisCronScheduler %s: next job is due now", self.name)
             return 0
         sleep = min(seconds_until_next, self.max_sleep_interval)
-        self.log.debug("RedisCronScheduler %s: next job in %.3fs; sleep %.3fs", self.name, seconds_until_next, sleep)
+        self.log.debug(
+            "RedisCronScheduler %s: next job in %.3fs; sleep %.3fs",
+            self.name,
+            seconds_until_next,
+            sleep,
+        )
         return sleep
 
     def save_jobs_data(self) -> None:
@@ -659,16 +735,22 @@ class RedisCronScheduler(CronScheduler):
                 self._refresh_update_marker()
                 self.enqueue_jobs()
                 self.heartbeat()
-                sleep_time = min(self.calculate_sleep_interval(), max(1.0, self.lock_ttl / 2))
-                self.log.debug("RedisCronScheduler %s: sleep for %.3fs", self.name, sleep_time)
+                sleep_time = min(
+                    self.calculate_sleep_interval(), max(1.0, self.lock_ttl / 2)
+                )
+                self.log.debug(
+                    "RedisCronScheduler %s: sleep for %.3fs", self.name, sleep_time
+                )
                 if sleep_time > 0:
                     message = pubsub.get_message(timeout=sleep_time)
                     if message is not None:
                         self._refresh_update_marker(force=True)
         except KeyboardInterrupt:
-            self.log.info('RedisCronScheduler %s: received KeyboardInterrupt', self.name)
+            self.log.info(
+                "RedisCronScheduler %s: received KeyboardInterrupt", self.name
+            )
         except StopRequested:
-            self.log.info('RedisCronScheduler %s: stop requested', self.name)
+            self.log.info("RedisCronScheduler %s: stop requested", self.name)
         finally:
             pubsub.close()
             self.register_death()
@@ -683,10 +765,18 @@ class RedisCronScheduler(CronScheduler):
         """
         token = self._acquire_lock()
         if token is None:
-            self.log.warning("RedisCronScheduler %s: another scheduler already owns %s", self.name, CRON_JOBS_LOCK_KEY)
-            raise RuntimeError(f"Another RedisCronScheduler already owns {CRON_JOBS_LOCK_KEY}")
+            self.log.warning(
+                "RedisCronScheduler %s: another scheduler already owns %s",
+                self.name,
+                CRON_JOBS_LOCK_KEY,
+            )
+            raise RuntimeError(
+                f"Another RedisCronScheduler already owns {CRON_JOBS_LOCK_KEY}"
+            )
 
-        self.log.debug("RedisCronScheduler %s: acquired scheduler lock token=%s", self.name, token)
+        self.log.debug(
+            "RedisCronScheduler %s: acquired scheduler lock token=%s", self.name, token
+        )
         try:
             super().register_birth()
         except Exception:
@@ -709,12 +799,16 @@ class RedisCronScheduler(CronScheduler):
         """
         super().heartbeat()
         if self._lock_token is not None and not self._extend_lock(self._lock_token):
-            self.log.warning("RedisCronScheduler %s: lost scheduler lock; stopping", self.name)
+            self.log.warning(
+                "RedisCronScheduler %s: lost scheduler lock; stopping", self.name
+            )
             raise StopRequested()
 
     def _acquire_lock(self) -> str | None:
         token = f"{self.name}:{uuid.uuid4().hex}"
-        acquired = self.connection.set(CRON_JOBS_LOCK_KEY, token, nx=True, ex=self.lock_ttl)
+        acquired = self.connection.set(
+            CRON_JOBS_LOCK_KEY, token, nx=True, ex=self.lock_ttl
+        )
         if acquired:
             self._lock_token = token
             self.log.debug(
@@ -724,19 +818,39 @@ class RedisCronScheduler(CronScheduler):
                 self.lock_ttl,
             )
             return token
-        self.log.debug("RedisCronScheduler %s: lock acquisition failed key=%s", self.name, CRON_JOBS_LOCK_KEY)
+        self.log.debug(
+            "RedisCronScheduler %s: lock acquisition failed key=%s",
+            self.name,
+            CRON_JOBS_LOCK_KEY,
+        )
         return None
 
     def _release_lock(self, token: str) -> bool:
-        released = bool(self.connection.eval(_RELEASE_LOCK_SCRIPT, 1, CRON_JOBS_LOCK_KEY, token))
+        released = bool(
+            self.connection.eval(_RELEASE_LOCK_SCRIPT, 1, CRON_JOBS_LOCK_KEY, token)
+        )
         if released and self._lock_token == token:
             self._lock_token = None
-        self.log.debug("RedisCronScheduler %s: lock release token=%s released=%s", self.name, token, released)
+        self.log.debug(
+            "RedisCronScheduler %s: lock release token=%s released=%s",
+            self.name,
+            token,
+            released,
+        )
         return released
 
     def _extend_lock(self, token: str) -> bool:
-        extended = bool(self.connection.eval(_EXTEND_LOCK_SCRIPT, 1, CRON_JOBS_LOCK_KEY, token, self.lock_ttl))
-        self.log.debug("RedisCronScheduler %s: lock extend token=%s extended=%s", self.name, token, extended)
+        extended = bool(
+            self.connection.eval(
+                _EXTEND_LOCK_SCRIPT, 1, CRON_JOBS_LOCK_KEY, token, self.lock_ttl
+            )
+        )
+        self.log.debug(
+            "RedisCronScheduler %s: lock extend token=%s extended=%s",
+            self.name,
+            token,
+            extended,
+        )
         return extended
 
     def _owns_lock(self) -> bool:

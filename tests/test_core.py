@@ -11,6 +11,7 @@ from rq.cron import CronScheduler
 from rq.utils import now
 
 from rediscron.core import (
+    CRON_JOBS_EVENTS_CHANNEL,
     CRON_JOBS_INDEX_KEY,
     CRON_JOBS_LAST_UPDATE_KEY,
     CRON_JOBS_LOCK_KEY,
@@ -60,7 +61,9 @@ class MemoryRedis:
         return int(removed)
 
     def zadd(self, key, mapping, **kwargs):
-        self.zsets.setdefault(key, {}).update({member: float(score) for member, score in mapping.items()})
+        self.zsets.setdefault(key, {}).update(
+            {member: float(score) for member, score in mapping.items()}
+        )
         return len(mapping)
 
     def zrem(self, key, *members):
@@ -74,7 +77,9 @@ class MemoryRedis:
         return removed
 
     def zrange(self, key, start, end, withscores=False, **kwargs):
-        items = sorted(self.zsets.get(key, {}).items(), key=lambda item: (item[1], item[0]))
+        items = sorted(
+            self.zsets.get(key, {}).items(), key=lambda item: (item[1], item[0])
+        )
         if end == -1:
             selected = items[start:]
         else:
@@ -88,7 +93,9 @@ class MemoryRedis:
         max_score = float("inf") if max == "+inf" else float(max)
         return [
             member
-            for member, score in sorted(self.zsets.get(key, {}).items(), key=lambda item: (item[1], item[0]))
+            for member, score in sorted(
+                self.zsets.get(key, {}).items(), key=lambda item: (item[1], item[0])
+            )
             if min_score <= score <= max_score
         ]
 
@@ -116,7 +123,11 @@ class MemoryRedis:
         return 0
 
     def keys(self, pattern):
-        return [key for key in set(self.hashes) | set(self.strings) | set(self.zsets) if fnmatch.fnmatch(key, pattern)]
+        return [
+            key
+            for key in set(self.hashes) | set(self.strings) | set(self.zsets)
+            if fnmatch.fnmatch(key, pattern)
+        ]
 
 
 class RedisCronJobTests(unittest.TestCase):
@@ -144,19 +155,67 @@ class RedisCronJobTests(unittest.TestCase):
         self.assertEqual(fetched.args, (42,))
         self.assertEqual(fetched.kwargs, {"marker": "pm25"})
         self.assertEqual(fetched.interval, 30)
+        self.assertTrue(fetched.enabled)
         self.assertEqual(fetched.job_options["result_ttl"], 10)
         self.assertEqual(fetched.job_options["meta"], {"source": "sensor"})
         self.assertIn("air-quality", redis.zsets[CRON_JOBS_INDEX_KEY])
 
     def test_delete_removes_hash_and_index_entry(self):
         redis = MemoryRedis()
-        job = RedisCronJob(id="stale", queue_name="default", func=sample_task, interval=60, connection=redis)
+        job = RedisCronJob(
+            id="stale",
+            queue_name="default",
+            func=sample_task,
+            interval=60,
+            connection=redis,
+        )
         job.save()
 
         job.delete()
 
         self.assertEqual(redis.hgetall(job.key), {})
         self.assertNotIn("stale", redis.zsets[CRON_JOBS_INDEX_KEY])
+
+    def test_disabled_job_is_persisted_but_not_indexed(self):
+        redis = MemoryRedis()
+        job = RedisCronJob(
+            id="disabled",
+            queue_name="default",
+            func=sample_task,
+            interval=60,
+            connection=redis,
+            enabled=False,
+        )
+
+        job.save()
+        fetched = RedisCronJob.fetch("disabled", redis)
+
+        self.assertFalse(fetched.enabled)
+        self.assertNotIn("disabled", redis.zsets[CRON_JOBS_INDEX_KEY])
+
+    def test_enable_and_disable_update_index_and_publish_events(self):
+        redis = MemoryRedis()
+        job = RedisCronJob(
+            id="metric",
+            queue_name="default",
+            func=sample_task,
+            interval=60,
+            connection=redis,
+        )
+        job.save()
+
+        job.disable()
+
+        self.assertFalse(RedisCronJob.fetch("metric", redis).enabled)
+        self.assertNotIn("metric", redis.zsets[CRON_JOBS_INDEX_KEY])
+        self.assertEqual(redis.events[-1][0], CRON_JOBS_EVENTS_CHANNEL)
+        self.assertIn('"event":"disabled"', redis.events[-1][1])
+
+        job.enable()
+
+        self.assertTrue(RedisCronJob.fetch("metric", redis).enabled)
+        self.assertIn("metric", redis.zsets[CRON_JOBS_INDEX_KEY])
+        self.assertIn('"event":"enabled"', redis.events[-1][1])
 
 
 class RedisCronSchedulerTests(unittest.TestCase):
@@ -168,7 +227,9 @@ class RedisCronSchedulerTests(unittest.TestCase):
         scheduler = RedisCronScheduler(redis)
         scheduler.register(sample_task, "default", id="metric", args=(1,), interval=60)
         first = RedisCronJob.fetch("metric", redis)
-        scheduler.register(sample_task, "critical", id="metric", args=(2,), interval=120)
+        scheduler.register(
+            sample_task, "critical", id="metric", args=(2,), interval=120
+        )
 
         edited = RedisCronJob.fetch("metric", redis)
         self.assertEqual(edited.created_at, first.created_at)
@@ -177,10 +238,42 @@ class RedisCronSchedulerTests(unittest.TestCase):
         self.assertEqual(edited.interval, 120)
         self.assertEqual(list(redis.zsets[CRON_JOBS_INDEX_KEY]), ["metric"])
 
+    def test_register_preserves_disabled_existing_job_by_default(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis)
+        scheduler.register(
+            sample_task, "default", id="metric", args=(1,), interval=60, enabled=False
+        )
+
+        scheduler.register(
+            sample_task, "critical", id="metric", args=(2,), interval=120
+        )
+
+        edited = RedisCronJob.fetch("metric", redis)
+        self.assertFalse(edited.enabled)
+        self.assertNotIn("metric", redis.zsets[CRON_JOBS_INDEX_KEY])
+
+    def test_register_can_enable_existing_disabled_job(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis)
+        scheduler.register(
+            sample_task, "default", id="metric", args=(1,), interval=60, enabled=False
+        )
+
+        scheduler.register(
+            sample_task, "critical", id="metric", args=(2,), interval=120, enabled=True
+        )
+
+        edited = RedisCronJob.fetch("metric", redis)
+        self.assertTrue(edited.enabled)
+        self.assertIn("metric", redis.zsets[CRON_JOBS_INDEX_KEY])
+
     def test_enqueue_jobs_uses_lock_and_updates_next_schedule(self):
         redis = MemoryRedis()
         scheduler = RedisCronScheduler(redis)
-        job = scheduler.register(sample_task, "default", id="metric", args=(1,), interval=60)
+        job = scheduler.register(
+            sample_task, "default", id="metric", args=(1,), interval=60
+        )
         job.next_enqueue_time = now() - timedelta(seconds=1)
         job.save()
         self.assertIsNotNone(scheduler._acquire_lock())
@@ -201,10 +294,27 @@ class RedisCronSchedulerTests(unittest.TestCase):
         self.assertGreater(redis.zsets[CRON_JOBS_INDEX_KEY]["metric"], time.time())
         self.assertIn(CRON_JOBS_LOCK_KEY, redis.strings)
 
+    def test_enqueue_jobs_skips_disabled_jobs(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis)
+        job = scheduler.register(
+            sample_task, "default", id="metric", args=(1,), interval=60
+        )
+        job.next_enqueue_time = now() - timedelta(seconds=1)
+        job.disable()
+        redis.zadd(CRON_JOBS_INDEX_KEY, {"metric": time.time() - 1})
+        self.assertIsNotNone(scheduler._acquire_lock())
+
+        self.assertEqual(scheduler.enqueue_jobs(), [])
+        self.assertEqual(FakeQueue.calls, [])
+        self.assertNotIn("metric", redis.zsets[CRON_JOBS_INDEX_KEY])
+
     def test_enqueue_without_owned_scheduler_lock_does_not_enqueue(self):
         redis = MemoryRedis()
         scheduler = RedisCronScheduler(redis)
-        job = scheduler.register(sample_task, "default", id="metric", args=(1,), interval=60)
+        job = scheduler.register(
+            sample_task, "default", id="metric", args=(1,), interval=60
+        )
         job.next_enqueue_time = now() - timedelta(seconds=1)
         job.save()
         redis.set(CRON_JOBS_LOCK_KEY, "other-owner")
@@ -268,10 +378,40 @@ class RedisCronSchedulerTests(unittest.TestCase):
         scheduler = RedisCronScheduler(redis)
         self.assertIsNone(scheduler.last_seen_update)
 
-        RedisCronJob(id="metric", queue_name="default", func=sample_task, interval=60, connection=redis).save()
+        RedisCronJob(
+            id="metric",
+            queue_name="default",
+            func=sample_task,
+            interval=60,
+            connection=redis,
+        ).save()
 
         self.assertTrue(scheduler._refresh_update_marker())
         self.assertIsNotNone(redis.get(CRON_JOBS_LAST_UPDATE_KEY))
+
+    def test_get_jobs_returns_enabled_jobs_only(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis)
+        scheduler.register(sample_task, "default", id="enabled", interval=60)
+        scheduler.register(
+            sample_task, "default", id="disabled", interval=60, enabled=False
+        )
+
+        jobs = scheduler.get_jobs()
+
+        self.assertEqual([job.id for job in jobs], ["enabled"])
+
+    def test_get_all_jobs_returns_enabled_and_disabled_jobs(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis)
+        scheduler.register(sample_task, "default", id="enabled", interval=60)
+        scheduler.register(
+            sample_task, "default", id="disabled", interval=60, enabled=False
+        )
+
+        jobs = scheduler.get_all_jobs()
+
+        self.assertEqual([job.id for job in jobs], ["disabled", "enabled"])
 
 
 if __name__ == "__main__":
