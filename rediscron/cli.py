@@ -43,10 +43,10 @@ def _show_jobs(jobs: list[RedisCronJob]) -> None:
     max_schedule = max(len(_schedule(job)) for job in jobs)
     for job in jobs:
         click.echo(
-            f"{job.queue_name:<{max_queue}}  "
+            f"{job.id}  "
             f"{_schedule(job):<{max_schedule}}  "
             f"{_state(job):<8}  "
-            f"{job.id}"
+            f"{job.queue_name:<{max_queue}}  "
         )
     click.echo(f"{len(jobs)} scheduled jobs total")
 
@@ -66,7 +66,7 @@ def _show_jobs_by_queue(jobs: list[RedisCronJob]) -> None:
         click.echo(f"{queue_name}:")
         for job in queue_jobs:
             click.echo(
-                f"  {_schedule(job):<{max_schedule}}  {_state(job):<8}  {job.id}"
+                f"  {job.id}  {_schedule(job):<{max_schedule}}  {_state(job):<8}"
             )
         click.echo("")
 
