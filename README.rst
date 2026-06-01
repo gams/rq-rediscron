@@ -63,3 +63,8 @@ the scheduler is started, the list of scheduled jobs cannot be easily modified.
 In some cases, we want to be able to add/edit/delete scheduled jobs on the fly
 and for the scheduler to acknowledge those events accordingly. This is what
 lead the design choices for this package.
+
+Inspired by `redisbeat <https://github.com/sibson/redbeat>`__, a celery
+scheduler using redis to store metadata. See `Hello RedBeat: A New Celery Beat
+Scheduler <https://www.heroku.com/blog/redbeat-celery-beat-scheduler/>`__ for
+mor info.

@@ -23,4 +23,4 @@ Why?
 
 .. include:: ../README.rst
    :start-line: 56
-   :end-line: 65
+   :end-line: 70
