@@ -231,7 +231,7 @@ class RedisCronJob(CronJob):
             else "",
             "created_at": utcformat(self.created_at),
             "updated_at": utcformat(self.updated_at),
-            "enabled": self.enabled,
+            "enabled": int(self.enabled),
         }
         for key in ("job_timeout", "result_ttl", "ttl", "failure_ttl"):
             data[key] = self.job_options.get(key, "")

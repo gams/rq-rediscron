@@ -160,6 +160,7 @@ class RedisCronJobTests(unittest.TestCase):
         self.assertTrue(fetched.enabled)
         self.assertEqual(fetched.job_options["result_ttl"], 10)
         self.assertEqual(fetched.job_options["meta"], {"source": "sensor"})
+        self.assertEqual(redis.hashes[job.key]["enabled"], 1)
         self.assertIn("air-quality", redis.zsets[CRON_JOBS_INDEX_KEY])
 
     def test_delete_removes_hash_and_index_entry(self):
@@ -193,6 +194,7 @@ class RedisCronJobTests(unittest.TestCase):
         fetched = RedisCronJob.fetch("disabled", redis)
 
         self.assertFalse(fetched.enabled)
+        self.assertEqual(redis.hashes[job.key]["enabled"], 0)
         self.assertNotIn("disabled", redis.zsets[CRON_JOBS_INDEX_KEY])
 
     def test_enable_and_disable_update_index_and_publish_events(self):
