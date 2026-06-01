@@ -49,6 +49,7 @@ path = "rediscron/__meta__.py"
 
 [dependency-groups]
 dev = [
+    "ruff>=0.15.15",
     "tox>=4.55.0",
     "tox-uv>=1.35.2",
 ]

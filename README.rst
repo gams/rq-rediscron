@@ -51,6 +51,21 @@ Keys used by this package:
 - ``rq:cron_jobs:last_update`` records runtime changes.
 - ``rq:cron_jobs:events`` publishes create, update, and delete events.
 
+Development
+===========
+
+To install `pre-commit <https://pre-commit.com/>`__, do the following:
+
+.. code-block::
+
+    $ uv tool install pre-commit --with pre-commit-uv
+
+To enable ``pre-commit`` git hooks:
+
+.. code-block::
+
+    $ pre-commit install
+
 Why?
 ====
 
