@@ -488,6 +488,7 @@ wheels = [
 name = "rq-rediscron"
 source = { editable = "." }
 dependencies = [
+    { name = "click" },
     { name = "redis" },
     { name = "rq" },
 ]
@@ -504,6 +505,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = ">=8" },
     { name = "redis", specifier = ">=5" },
     { name = "rq", specifier = ">=2.8" },
 ]

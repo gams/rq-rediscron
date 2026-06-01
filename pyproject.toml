@@ -24,10 +24,14 @@ classifiers=[
 ]
 license-files = ["LICENSE"]
 dependencies = [
+    "click>=8",
     "redis>=5",
     "rq>=2.8",
 ]
 dynamic = ["version"]
+
+[project.scripts]
+rqrcron = "rediscron.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/gams/rq-rediscron"

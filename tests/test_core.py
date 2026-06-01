@@ -5,11 +5,13 @@ import time
 import unittest
 from datetime import timedelta
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
+from click.testing import CliRunner
 from rq.cron import CronScheduler
 from rq.utils import now
 
+from rediscron.cli import main as cli_main
 from rediscron.core import (
     CRON_JOBS_EVENTS_CHANNEL,
     CRON_JOBS_INDEX_KEY,
@@ -412,6 +414,83 @@ class RedisCronSchedulerTests(unittest.TestCase):
         jobs = scheduler.get_all_jobs()
 
         self.assertEqual([job.id for job in jobs], ["disabled", "enabled"])
+
+
+class CliTests(unittest.TestCase):
+    def test_info_lists_enabled_and_disabled_jobs(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis)
+        scheduler.register(sample_task, "default", id="cleanup", cron="*/5 * * * *")
+        scheduler.register(
+            sample_task,
+            "metrics",
+            id="hourly-metrics",
+            cron="0 * * * *",
+            enabled=False,
+        )
+
+        runner = CliRunner()
+        with patch(
+            "rq.cli.helpers.CliConfig.connection",
+            new_callable=PropertyMock,
+            return_value=redis,
+        ):
+            result = runner.invoke(cli_main, ["info"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("default", result.output)
+        self.assertIn("*/5 * * * *", result.output)
+        self.assertIn("enabled", result.output)
+        self.assertIn("cleanup", result.output)
+        self.assertIn("metrics", result.output)
+        self.assertIn("0 * * * *", result.output)
+        self.assertIn("disabled", result.output)
+        self.assertIn("hourly-metrics", result.output)
+        self.assertIn("2 scheduled jobs total", result.output)
+        self.assertIn("Updated:", result.output)
+
+    def test_info_by_queue_groups_scheduled_jobs(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis)
+        scheduler.register(sample_task, "default", id="fast", interval=60)
+        scheduler.register(sample_task, "default", id="slow", interval=120)
+        scheduler.register(sample_task, "metrics", id="hourly", cron="0 * * * *")
+
+        runner = CliRunner()
+        with patch(
+            "rq.cli.helpers.CliConfig.connection",
+            new_callable=PropertyMock,
+            return_value=redis,
+        ):
+            result = runner.invoke(cli_main, ["info", "-R"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("default:", result.output)
+        self.assertIn("every 60s", result.output)
+        self.assertIn("every 120s", result.output)
+        self.assertIn("metrics:", result.output)
+        self.assertIn("0 * * * *", result.output)
+        self.assertIn("2 queues, 3 scheduled jobs total", result.output)
+
+    def test_info_filters_by_queue_name(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis)
+        scheduler.register(sample_task, "default", id="cleanup", interval=60)
+        scheduler.register(sample_task, "metrics", id="hourly", interval=120)
+
+        runner = CliRunner()
+        with patch(
+            "rq.cli.helpers.CliConfig.connection",
+            new_callable=PropertyMock,
+            return_value=redis,
+        ):
+            result = runner.invoke(cli_main, ["info", "metrics"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("cleanup", result.output)
+        self.assertIn("metrics", result.output)
+        self.assertIn("hourly", result.output)
+        self.assertIn("1 scheduled jobs total", result.output)
 
 
 if __name__ == "__main__":
