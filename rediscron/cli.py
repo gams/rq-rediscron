@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime
 
 import click
 from redis.exceptions import ConnectionError
-from rq.cli.helpers import pass_cli_config, refresh
+from rq.cli.helpers import pass_cli_config
 from rq.utils import utcformat
 
 from .core import RedisCronJob, RedisCronScheduler
@@ -91,14 +92,27 @@ def _show_jobs_by_queue(jobs: list[RedisCronJob]) -> None:
     click.echo(f"{len(grouped)} queues, {len(jobs)} scheduled jobs total")
 
 
-def _show_info(connection, queues: tuple[str, ...], by_queue: bool) -> None:
-    jobs = _load_jobs(connection, queues)
+def _show_info(jobs: list[RedisCronJob], by_queue: bool) -> None:
     if by_queue:
         _show_jobs_by_queue(jobs)
     else:
         _show_jobs(jobs)
     click.echo("")
     click.echo(f"Updated: {datetime.now()}")
+
+
+def _refresh(
+    interval: float | None, connection, queues: tuple[str, ...], by_queue: bool
+) -> None:
+    while True:
+        jobs = _load_jobs(connection, queues)
+        if interval:
+            click.clear()
+        _show_info(jobs, by_queue)
+        if interval:
+            time.sleep(interval)
+        else:
+            break
 
 
 @click.group()
@@ -120,7 +134,7 @@ def info(
 ) -> None:
     """List scheduled Redis cron jobs."""
     try:
-        refresh(interval, _show_info, cli_config.connection, queues, by_queue)
+        _refresh(interval, cli_config.connection, queues, by_queue)
     except ConnectionError as exc:
         click.echo(exc)
         sys.exit(1)

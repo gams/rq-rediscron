@@ -6,6 +6,7 @@ from unittest.mock import PropertyMock, patch
 from click.testing import CliRunner
 from rq.utils import utcformat
 
+import rediscron.cli as rediscron_cli
 from rediscron.cli import main as cli_main
 from rediscron.core import RedisCronScheduler
 from tests.conftest import MemoryRedis, sample_task
@@ -91,6 +92,34 @@ class CliTests(unittest.TestCase):
         self.assertIn("metrics", result.output)
         self.assertIn("hourly", result.output)
         self.assertIn("1 scheduled jobs total", result.output)
+
+    def test_interval_refresh_loads_jobs_before_clearing_screen(self):
+        events = []
+
+        def load_jobs(connection, queues):
+            events.append("load")
+            return []
+
+        def clear():
+            events.append("clear")
+
+        def show_info(jobs, by_queue):
+            events.append("show")
+
+        def sleep(interval):
+            events.append("sleep")
+            raise KeyboardInterrupt
+
+        with (
+            patch.object(rediscron_cli, "_load_jobs", load_jobs),
+            patch.object(rediscron_cli.click, "clear", clear),
+            patch.object(rediscron_cli, "_show_info", show_info),
+            patch.object(rediscron_cli.time, "sleep", sleep),
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                rediscron_cli._refresh(1, object(), (), False)
+
+        self.assertEqual(events, ["load", "clear", "show", "sleep"])
 
 
 if __name__ == "__main__":
