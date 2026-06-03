@@ -28,6 +28,7 @@ publish: build
 
 .PHONY: release
 release: bump publish
+	git push upstream --tags
 
 .PHONY: unittest
 unittest:
