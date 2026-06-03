@@ -26,9 +26,12 @@ build: buildclean tox
 publish: build
 	uv publish
 
-.PHONY: release
-release: bump publish
+.PHONY: puh
+push:
 	git push upstream --tags
+
+.PHONY: release
+release: bump publish push
 
 .PHONY: unittest
 unittest:
