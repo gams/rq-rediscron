@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import fnmatch
 import time
 import unittest
 from datetime import timedelta
-from typing import Any
-from unittest.mock import PropertyMock, patch
+from unittest.mock import patch
 
-from click.testing import CliRunner
 from rq.cron import CronScheduler
 from rq.utils import now
 
-from rediscron.cli import main as cli_main
 from rediscron.core import (
     CRON_JOBS_EVENTS_CHANNEL,
     CRON_JOBS_INDEX_KEY,
@@ -20,116 +16,7 @@ from rediscron.core import (
     RedisCronJob,
     RedisCronScheduler,
 )
-
-
-ENQUEUED: list[tuple[int, str | None]] = []
-
-
-def sample_task(value: int, marker: str | None = None) -> None:
-    ENQUEUED.append((value, marker))
-
-
-class FakeQueue:
-    calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
-
-    def __init__(self, name: str, connection: Any):
-        self.name = name
-        self.connection = connection
-
-    def enqueue(self, func, *args, **kwargs):
-        self.calls.append((self.name, args, kwargs))
-        return {"func": func, "args": args, "kwargs": kwargs}
-
-
-class MemoryRedis:
-    def __init__(self):
-        self.hashes: dict[str, dict[str, Any]] = {}
-        self.strings: dict[str, Any] = {}
-        self.zsets: dict[str, dict[str, float]] = {}
-        self.events: list[tuple[str, str]] = []
-
-    def hset(self, key, mapping=None, *args, **kwargs):
-        self.hashes.setdefault(key, {}).update(mapping or {})
-        return len(mapping or {})
-
-    def hgetall(self, key):
-        return dict(self.hashes.get(key, {}))
-
-    def delete(self, key):
-        removed = key in self.hashes or key in self.strings or key in self.zsets
-        self.hashes.pop(key, None)
-        self.strings.pop(key, None)
-        self.zsets.pop(key, None)
-        return int(removed)
-
-    def zadd(self, key, mapping, **kwargs):
-        self.zsets.setdefault(key, {}).update(
-            {member: float(score) for member, score in mapping.items()}
-        )
-        return len(mapping)
-
-    def zrem(self, key, *members):
-        zset = self.zsets.setdefault(key, {})
-        removed = 0
-        for member in members:
-            member = member.decode() if isinstance(member, bytes) else member
-            if member in zset:
-                removed += 1
-                del zset[member]
-        return removed
-
-    def zrange(self, key, start, end, withscores=False, **kwargs):
-        items = sorted(
-            self.zsets.get(key, {}).items(), key=lambda item: (item[1], item[0])
-        )
-        if end == -1:
-            selected = items[start:]
-        else:
-            selected = items[start : end + 1]
-        if withscores:
-            return selected
-        return [member for member, _score in selected]
-
-    def zrangebyscore(self, key, min, max, **kwargs):
-        min_score = float("-inf") if min == "-inf" else float(min)
-        max_score = float("inf") if max == "+inf" else float(max)
-        return [
-            member
-            for member, score in sorted(
-                self.zsets.get(key, {}).items(), key=lambda item: (item[1], item[0])
-            )
-            if min_score <= score <= max_score
-        ]
-
-    def set(self, key, value, nx=False, ex=None):
-        if nx and key in self.strings:
-            return False
-        self.strings[key] = value
-        return True
-
-    def get(self, key):
-        return self.strings.get(key)
-
-    def publish(self, channel, payload):
-        self.events.append((channel, payload))
-        return 1
-
-    def eval(self, script, numkeys, key, token, *args):
-        if self.strings.get(key) != token:
-            return 0
-        if args:
-            return 1
-        if self.strings.get(key) == token:
-            del self.strings[key]
-            return 1
-        return 0
-
-    def keys(self, pattern):
-        return [
-            key
-            for key in set(self.hashes) | set(self.strings) | set(self.zsets)
-            if fnmatch.fnmatch(key, pattern)
-        ]
+from tests.conftest import FakeQueue, MemoryRedis, sample_task
 
 
 class RedisCronJobTests(unittest.TestCase):
@@ -152,7 +39,7 @@ class RedisCronJobTests(unittest.TestCase):
 
         self.assertEqual(fetched.id, "air-quality")
         self.assertEqual(fetched.func, sample_task)
-        self.assertEqual(fetched.func_name, f"{__name__}.sample_task")
+        self.assertEqual(fetched.func_name, "tests.conftest.sample_task")
         self.assertEqual(fetched.queue_name, "metrics")
         self.assertEqual(fetched.args, (42,))
         self.assertEqual(fetched.kwargs, {"marker": "pm25"})
@@ -416,83 +303,6 @@ class RedisCronSchedulerTests(unittest.TestCase):
         jobs = scheduler.get_all_jobs()
 
         self.assertEqual([job.id for job in jobs], ["disabled", "enabled"])
-
-
-class CliTests(unittest.TestCase):
-    def test_info_lists_enabled_and_disabled_jobs(self):
-        redis = MemoryRedis()
-        scheduler = RedisCronScheduler(redis)
-        scheduler.register(sample_task, "default", id="cleanup", cron="*/5 * * * *")
-        scheduler.register(
-            sample_task,
-            "metrics",
-            id="hourly-metrics",
-            cron="0 * * * *",
-            enabled=False,
-        )
-
-        runner = CliRunner()
-        with patch(
-            "rq.cli.helpers.CliConfig.connection",
-            new_callable=PropertyMock,
-            return_value=redis,
-        ):
-            result = runner.invoke(cli_main, ["info"])
-
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("default", result.output)
-        self.assertIn("*/5 * * * *", result.output)
-        self.assertIn("enabled", result.output)
-        self.assertIn("cleanup", result.output)
-        self.assertIn("metrics", result.output)
-        self.assertIn("0 * * * *", result.output)
-        self.assertIn("disabled", result.output)
-        self.assertIn("hourly-metrics", result.output)
-        self.assertIn("2 scheduled jobs total", result.output)
-        self.assertIn("Updated:", result.output)
-
-    def test_info_by_queue_groups_scheduled_jobs(self):
-        redis = MemoryRedis()
-        scheduler = RedisCronScheduler(redis)
-        scheduler.register(sample_task, "default", id="fast", interval=60)
-        scheduler.register(sample_task, "default", id="slow", interval=120)
-        scheduler.register(sample_task, "metrics", id="hourly", cron="0 * * * *")
-
-        runner = CliRunner()
-        with patch(
-            "rq.cli.helpers.CliConfig.connection",
-            new_callable=PropertyMock,
-            return_value=redis,
-        ):
-            result = runner.invoke(cli_main, ["info", "-R"])
-
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("default:", result.output)
-        self.assertIn("every 60s", result.output)
-        self.assertIn("every 120s", result.output)
-        self.assertIn("metrics:", result.output)
-        self.assertIn("0 * * * *", result.output)
-        self.assertIn("2 queues, 3 scheduled jobs total", result.output)
-
-    def test_info_filters_by_queue_name(self):
-        redis = MemoryRedis()
-        scheduler = RedisCronScheduler(redis)
-        scheduler.register(sample_task, "default", id="cleanup", interval=60)
-        scheduler.register(sample_task, "metrics", id="hourly", interval=120)
-
-        runner = CliRunner()
-        with patch(
-            "rq.cli.helpers.CliConfig.connection",
-            new_callable=PropertyMock,
-            return_value=redis,
-        ):
-            result = runner.invoke(cli_main, ["info", "metrics"])
-
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertNotIn("cleanup", result.output)
-        self.assertIn("metrics", result.output)
-        self.assertIn("hourly", result.output)
-        self.assertIn("1 scheduled jobs total", result.output)
 
 
 if __name__ == "__main__":
