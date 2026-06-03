@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import PropertyMock, patch
 
 from click.testing import CliRunner
+from rq.utils import utcformat
 
 from rediscron.cli import main as cli_main
 from rediscron.core import RedisCronScheduler
@@ -14,8 +15,10 @@ class CliTests(unittest.TestCase):
     def test_info_lists_enabled_and_disabled_jobs(self):
         redis = MemoryRedis()
         scheduler = RedisCronScheduler(redis)
-        scheduler.register(sample_task, "default", id="cleanup", cron="*/5 * * * *")
-        scheduler.register(
+        cleanup = scheduler.register(
+            sample_task, "default", id="cleanup", cron="*/5 * * * *"
+        )
+        hourly_metrics = scheduler.register(
             sample_task,
             "metrics",
             id="hourly-metrics",
@@ -36,10 +39,12 @@ class CliTests(unittest.TestCase):
         self.assertIn("*/5 * * * *", result.output)
         self.assertIn("enabled", result.output)
         self.assertIn("cleanup", result.output)
+        self.assertIn(utcformat(cleanup.next_enqueue_time), result.output)
         self.assertIn("metrics", result.output)
         self.assertIn("0 * * * *", result.output)
         self.assertIn("disabled", result.output)
         self.assertIn("hourly-metrics", result.output)
+        self.assertIn(utcformat(hourly_metrics.next_enqueue_time), result.output)
         self.assertIn("2 scheduled jobs total", result.output)
         self.assertIn("Updated:", result.output)
 
@@ -61,6 +66,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("default:", result.output)
         self.assertIn("every 60s", result.output)
+        self.assertIn("now", result.output)
         self.assertIn("every 120s", result.output)
         self.assertIn("metrics:", result.output)
         self.assertIn("0 * * * *", result.output)

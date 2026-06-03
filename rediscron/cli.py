@@ -7,6 +7,7 @@ from datetime import datetime
 import click
 from redis.exceptions import ConnectionError
 from rq.cli.helpers import pass_cli_config, refresh
+from rq.utils import utcformat
 
 from .core import RedisCronJob, RedisCronScheduler
 
@@ -19,6 +20,17 @@ def _schedule(job: RedisCronJob) -> str:
 
 def _state(job: RedisCronJob) -> str:
     return "enabled" if job.enabled else "disabled"
+
+
+def _next_run(job: RedisCronJob) -> str:
+    next_enqueue_time = job.next_enqueue_time
+    if next_enqueue_time is None and job.interval and not job.latest_enqueue_time:
+        return "now"
+    if next_enqueue_time is None:
+        next_enqueue_time = job.get_next_enqueue_time()
+    if next_enqueue_time == datetime.max:
+        return "-"
+    return utcformat(next_enqueue_time)
 
 
 def _job_sort_key(job: RedisCronJob) -> tuple[str, str, str]:
@@ -41,11 +53,13 @@ def _show_jobs(jobs: list[RedisCronJob]) -> None:
 
     max_queue = max(len(job.queue_name) for job in jobs)
     max_schedule = max(len(_schedule(job)) for job in jobs)
+    max_next_run = max(len(_next_run(job)) for job in jobs)
     for job in jobs:
         click.echo(
             f"{job.id}  "
             f"{_schedule(job):<{max_schedule}}  "
             f"{_state(job):<8}  "
+            f"{_next_run(job):<{max_next_run}}  "
             f"{job.queue_name:<{max_queue}}  "
         )
     click.echo(f"{len(jobs)} scheduled jobs total")
@@ -63,10 +77,14 @@ def _show_jobs_by_queue(jobs: list[RedisCronJob]) -> None:
     for queue_name in sorted(grouped):
         queue_jobs = sorted(grouped[queue_name], key=_job_sort_key)
         max_schedule = max(len(_schedule(job)) for job in queue_jobs)
+        max_next_run = max(len(_next_run(job)) for job in queue_jobs)
         click.echo(f"{queue_name}:")
         for job in queue_jobs:
             click.echo(
-                f"  {job.id}  {_schedule(job):<{max_schedule}}  {_state(job):<8}"
+                f"  {job.id}  "
+                f"{_schedule(job):<{max_schedule}}  "
+                f"{_state(job):<8}  "
+                f"{_next_run(job):<{max_next_run}}"
             )
         click.echo("")
 
