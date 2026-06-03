@@ -7,13 +7,15 @@ import sys
 
 sys.path.insert(0, os.path.abspath(".."))
 
+import rediscron
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "rq-rediscron"
 copyright = "2026, gams Monitoring"
 author = "gams Monitoring"
-release = "0.1.2"
+release = rediscron.__version__
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
