@@ -27,11 +27,11 @@ type ``rqrcron info``:
 .. code-block:: shell
 
    $ rqrcron info
-   bar */1 * * * *  enabled   blah  
-   foo every 10s    enabled   blah  
+   visits  */1 * * * *  enabled   2026-06-03T05:40:00.000000Z  analytics    
+   vacuum  every 10s    enabled   2026-06-03T05:39:35.962178Z  maintenance  
    2 scheduled jobs total
 
-   Updated: 2026-06-02 00:29:50.050084
+   Updated: 2026-06-03 12:39:35.320659
 
 To see the scheduled jobs grouped by queue, just use the ``-R`` (or
 ``--by-queue``) flag:
@@ -39,13 +39,22 @@ To see the scheduled jobs grouped by queue, just use the ``-R`` (or
 .. code-block:: shell
 
    $ rqrcron info -R
-   blah:
-     bar  */1 * * * *  enabled 
-     foo  every 10s    enabled 
+   analytics:
+     visits  */1 * * * *  enabled   2026-06-03T05:41:00.000000Z
 
-   1 queues, 2 scheduled jobs total
+   maintenance:
+     vacuum  every 10s  enabled   2026-06-03T05:40:16.790579Z
 
-   Updated: 2026-06-02 00:29:45.197421
+   2 queues, 2 scheduled jobs total
+
+   Updated: 2026-06-03 12:40:14.200368
+
+To watch scheduled jobs, you can specify a poll interval using the ``-i`` (or
+``--interval``) flag:
+
+.. code-block:: shell
+
+   $ rqrcron info -i 1
 
 Why?
 ====
