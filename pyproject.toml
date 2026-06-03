@@ -36,7 +36,7 @@ rqrcron = "rediscron.cli:main"
 [project.urls]
 Homepage = "https://github.com/gams/rq-rediscron"
 Repository = "https://github.com/gams/rq-rediscron"
-Documentation = "https://rq-rediscron.readthedocs.io/en/latest/"
+Documentation = "https://rq-rediscron.readthedocs.io/en/stable/"
 
 [build-system]
 requires = ["hatchling"]
