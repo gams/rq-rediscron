@@ -35,4 +35,11 @@ html_theme = "shibuya"
 html_static_path = ["_static"]
 html_theme_options = {
     "accent_color": "blue",
+    "github_url": "https://github.com/gams/rq-rediscron",
+}
+
+html_context = {
+    "source_type": "github",
+    "source_user": "gams",
+    "source_repo": "rq-rediscron",
 }
