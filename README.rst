@@ -34,7 +34,6 @@ Usage
     scheduler.register(
         rebuild_metric,
         queue_name="metrics",
-        id="metric:pm25",
         args=("pm25",),
         interval=300,
     )

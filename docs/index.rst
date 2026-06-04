@@ -60,4 +60,4 @@ Why?
 ====
 
 .. include:: ../README.rst
-   :start-line: 71
+   :start-line: 70

@@ -22,6 +22,9 @@ CRON_JOBS_INDEX_KEY = "rq:cron_jobs"
 CRON_JOBS_LOCK_KEY = "rq:cron_jobs:lock"
 CRON_JOBS_LAST_UPDATE_KEY = "rq:cron_jobs:last_update"
 CRON_JOBS_EVENTS_CHANNEL = "rq:cron_jobs:events"
+GENERATED_CRON_JOB_ID_PREFIX = "cron:"
+RedisCronJobIdGenerator = Callable[["RedisCronJob"], str]
+"""Type for cron job id generators"""
 
 _RELEASE_LOCK_SCRIPT = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -106,16 +109,32 @@ def _timestamp(value: datetime | None) -> float:
     return value.timestamp()
 
 
+def _generate_cron_job_id(job: RedisCronJob | None = None) -> str:
+    """Base id generator for RedisCronJob, returns an id string.
+
+    :param RedisCronJob job: a cron job instance
+    """
+    return f"{GENERATED_CRON_JOB_ID_PREFIX}{uuid.uuid4().hex}"
+
+
 class RedisCronJob(CronJob):
-    """A Redis-persisted RQ cron job with a stable application-owned id.
+    """A Redis-persisted RQ cron job with an application-owned id.
 
     `RedisCronJob` is the persisted form of one recurring job. The job is stored
     in a Redis hash at `rq:cron_job:{id}` and indexed in `rq:cron_jobs` by its
     next enqueue timestamp.
 
     Create or update jobs through `RedisCronScheduler.register()` for normal
-    use. Use this class directly when you are building administration tools that
-    need to fetch, refresh, or delete one job.
+    use. If no id is supplied, a random id is generated. Use this class directly
+    when you are building administration tools that need to fetch, refresh, or
+    delete one job.
+
+    Pass an explicit `id` when you want a later registration to update the same
+    cron job instead of creating a new one. You can also provide an
+    `id_generator` when generated ids should include searchable, human-readable
+    fragments. The generator receives the initialized cron job before it is
+    saved, so it can read fields such as `queue_name`, `func_name`, `args`,
+    `kwargs`, `interval`, `cron`, and `job_options`.
 
     Example:
 
@@ -140,12 +159,31 @@ class RedisCronJob(CronJob):
         same_job = RedisCronJob.fetch("metric:pm25", redis)
         same_job.delete()
 
+    Custom id generator:
+
+    .. code-block:: python
+
+        from redis import Redis
+        from rediscron import RedisCronScheduler
+
+        def metric_id(job: RedisCronJob) -> str:
+            return f"metric:{job.args[0]}"
+
+        redis = Redis.from_url("redis://localhost:6379/0")
+        scheduler = RedisCronScheduler(redis, id_generator=metric_id)
+        scheduler.register(
+            rebuild_metric,
+            queue_name="metrics",
+            args=("pm25",),
+            interval=300,
+        )
+
     """
 
     def __init__(
         self,
-        id: str,
-        queue_name: str,
+        id: str | None = None,
+        queue_name: str | None = None,
         func: Callable | None = None,
         func_name: str | None = None,
         args: tuple | None = None,
@@ -163,9 +201,10 @@ class RedisCronJob(CronJob):
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
         enabled: bool = True,
+        id_generator: RedisCronJobIdGenerator | None = None,
     ):
-        if not id:
-            raise ValueError("RedisCronJob requires an explicit stable id")
+        if queue_name is None:
+            raise ValueError("RedisCronJob requires a queue_name")
 
         super().__init__(
             queue_name=queue_name,
@@ -181,6 +220,12 @@ class RedisCronJob(CronJob):
             failure_ttl=failure_ttl,
             meta=meta,
         )
+        if id is None:
+            id_generator = id_generator or _generate_cron_job_id
+            id = id_generator(self)
+        if not id:
+            raise ValueError("RedisCronJob id generator returned an empty id")
+        id = str(id)
         self.id = id
         self.connection = connection
         self.created_at = created_at or now()
@@ -487,6 +532,7 @@ class RedisCronScheduler(CronScheduler):
         name: str = "",
         lock_ttl: int = 120,
         max_sleep_interval: float = 60.0,
+        id_generator: RedisCronJobIdGenerator | None = None,
     ):
         super().__init__(connection=connection, logging_level=logging_level, name=name)
         self.lock_ttl = lock_ttl
@@ -494,12 +540,13 @@ class RedisCronScheduler(CronScheduler):
         self.last_seen_update = self._get_last_update()
         self._lock_token: str | None = None
         self.serializer = resolve_serializer()
+        self.id_generator = id_generator
 
     def register(
         self,
         func: Callable,
         queue_name: str,
-        id: str,
+        id: str | None = None,
         args: tuple | None = None,
         kwargs: dict | None = None,
         interval: int | None = None,
@@ -510,12 +557,14 @@ class RedisCronScheduler(CronScheduler):
         failure_ttl: int | None = None,
         meta: dict | None = None,
         enabled: bool | None = None,
+        id_generator: RedisCronJobIdGenerator | None = None,
     ) -> RedisCronJob:
         """Create or update one persisted cron job.
 
-        `id` is required and stable. Calling `register()` again with the same id
-        edits the existing job instead of adding a duplicate. Runtime edits are
-        persisted immediately and published to running schedulers.
+        `id` is optional. When omitted, a random id is generated. Calling
+        `register()` again with the same explicit id edits the existing job
+        instead of adding a duplicate. Runtime edits are persisted immediately
+        and published to running schedulers.
 
         Example:
 
@@ -536,25 +585,32 @@ class RedisCronScheduler(CronScheduler):
             args,
             kwargs,
         )
-        try:
-            existing = RedisCronJob.fetch(id, self.connection)
-            created_at = existing.created_at
-            latest_enqueue_time = existing.latest_enqueue_time
-            enabled = existing.enabled if enabled is None else enabled
-            event = "updated"
-            self.log.debug(
-                "Updating existing Redis cron job id=%s previous_queue=%s previous_interval=%s previous_cron=%s",
-                id,
-                existing.queue_name,
-                existing.interval,
-                existing.cron,
-            )
-        except NoSuchJobError:
+        if id is None:
             created_at = now()
             latest_enqueue_time = None
             enabled = True if enabled is None else enabled
             event = "created"
-            self.log.debug("Creating new Redis cron job id=%s", id)
+            self.log.debug("Creating new Redis cron job with generated id")
+        else:
+            try:
+                existing = RedisCronJob.fetch(id, self.connection)
+                created_at = existing.created_at
+                latest_enqueue_time = existing.latest_enqueue_time
+                enabled = existing.enabled if enabled is None else enabled
+                event = "updated"
+                self.log.debug(
+                    "Updating existing Redis cron job id=%s previous_queue=%s previous_interval=%s previous_cron=%s",
+                    id,
+                    existing.queue_name,
+                    existing.interval,
+                    existing.cron,
+                )
+            except NoSuchJobError:
+                created_at = now()
+                latest_enqueue_time = None
+                enabled = True if enabled is None else enabled
+                event = "created"
+                self.log.debug("Creating new Redis cron job id=%s", id)
 
         cron_job = RedisCronJob(
             id=id,
@@ -574,9 +630,12 @@ class RedisCronScheduler(CronScheduler):
             created_at=created_at,
             updated_at=now(),
             enabled=enabled,
+            id_generator=id_generator or self.id_generator,
         )
         cron_job.save(event=event)
-        self.log.info("Redis cron job %s id=%s queue=%s", event, id, queue_name)
+        self.log.info(
+            "Redis cron job %s id=%s queue=%s", event, cron_job.id, queue_name
+        )
         return cron_job
 
     def get_jobs(self) -> list[RedisCronJob]:

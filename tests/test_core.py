@@ -20,6 +20,53 @@ from tests.conftest import FakeQueue, MemoryRedis, sample_task
 
 
 class RedisCronJobTests(unittest.TestCase):
+    def test_generates_id_when_omitted(self):
+        redis = MemoryRedis()
+        job = RedisCronJob(
+            queue_name="default",
+            func=sample_task,
+            interval=60,
+            connection=redis,
+        )
+
+        job.save()
+        fetched = RedisCronJob.fetch(job.id, redis)
+
+        self.assertRegex(job.id, r"^cron:[0-9a-f]{32}$")
+        self.assertEqual(fetched.id, job.id)
+        self.assertIn(job.id, redis.zsets[CRON_JOBS_INDEX_KEY])
+
+    def test_uses_custom_id_generator_when_id_is_omitted(self):
+        redis = MemoryRedis()
+
+        def generate_id(job):
+            return f"metric:{job.queue_name}:{job.args[0]}"
+
+        job = RedisCronJob(
+            queue_name="metrics",
+            func=sample_task,
+            args=("pm25",),
+            interval=60,
+            connection=redis,
+            id_generator=generate_id,
+        )
+
+        job.save()
+
+        self.assertEqual(job.id, "metric:metrics:pm25")
+        self.assertIn("metric:metrics:pm25", redis.zsets[CRON_JOBS_INDEX_KEY])
+
+    def test_explicit_id_takes_precedence_over_custom_id_generator(self):
+        job = RedisCronJob(
+            id="explicit",
+            queue_name="metrics",
+            func=sample_task,
+            interval=60,
+            id_generator=lambda job: "generated",
+        )
+
+        self.assertEqual(job.id, "explicit")
+
     def test_save_and_fetch_round_trip_executable_fields(self):
         redis = MemoryRedis()
         job = RedisCronJob(
@@ -128,6 +175,45 @@ class RedisCronSchedulerTests(unittest.TestCase):
         self.assertEqual(edited.args, (2,))
         self.assertEqual(edited.interval, 120)
         self.assertEqual(list(redis.zsets[CRON_JOBS_INDEX_KEY]), ["metric"])
+
+    def test_register_without_id_generates_unique_job_ids(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis)
+
+        first = scheduler.register(sample_task, "default", args=(1,), interval=60)
+        second = scheduler.register(sample_task, "default", args=(1,), interval=60)
+
+        self.assertRegex(first.id, r"^cron:[0-9a-f]{32}$")
+        self.assertRegex(second.id, r"^cron:[0-9a-f]{32}$")
+        self.assertNotEqual(first.id, second.id)
+        self.assertEqual(set(redis.zsets[CRON_JOBS_INDEX_KEY]), {first.id, second.id})
+
+    def test_scheduler_uses_custom_id_generator(self):
+        redis = MemoryRedis()
+
+        def generate_id(job):
+            return f"metric:{job.args[0]}"
+
+        scheduler = RedisCronScheduler(redis, id_generator=generate_id)
+
+        job = scheduler.register(sample_task, "default", args=("pm25",), interval=60)
+
+        self.assertEqual(job.id, "metric:pm25")
+        self.assertIn("metric:pm25", redis.zsets[CRON_JOBS_INDEX_KEY])
+
+    def test_register_id_generator_overrides_scheduler_generator(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis, id_generator=lambda job: "scheduler")
+
+        job = scheduler.register(
+            sample_task,
+            "default",
+            args=("pm25",),
+            interval=60,
+            id_generator=lambda job: f"register:{job.args[0]}",
+        )
+
+        self.assertEqual(job.id, "register:pm25")
 
     def test_register_preserves_disabled_existing_job_by_default(self):
         redis = MemoryRedis()
