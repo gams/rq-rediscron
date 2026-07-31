@@ -588,6 +588,7 @@ class RedisCronScheduler(CronScheduler):
         if id is None:
             created_at = now()
             latest_enqueue_time = None
+            next_enqueue_time = None
             enabled = True if enabled is None else enabled
             event = "created"
             self.log.debug("Creating new Redis cron job with generated id")
@@ -596,6 +597,7 @@ class RedisCronScheduler(CronScheduler):
                 existing = RedisCronJob.fetch(id, self.connection)
                 created_at = existing.created_at
                 latest_enqueue_time = existing.latest_enqueue_time
+                next_enqueue_time = existing.next_enqueue_time
                 enabled = existing.enabled if enabled is None else enabled
                 event = "updated"
                 self.log.debug(
@@ -608,6 +610,7 @@ class RedisCronScheduler(CronScheduler):
             except NoSuchJobError:
                 created_at = now()
                 latest_enqueue_time = None
+                next_enqueue_time = None
                 enabled = True if enabled is None else enabled
                 event = "created"
                 self.log.debug("Creating new Redis cron job id=%s", id)
@@ -627,6 +630,7 @@ class RedisCronScheduler(CronScheduler):
             meta=meta,
             connection=self.connection,
             latest_enqueue_time=latest_enqueue_time,
+            next_enqueue_time=next_enqueue_time,
             created_at=created_at,
             updated_at=now(),
             enabled=enabled,

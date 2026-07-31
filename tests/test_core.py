@@ -176,6 +176,26 @@ class RedisCronSchedulerTests(unittest.TestCase):
         self.assertEqual(edited.interval, 120)
         self.assertEqual(list(redis.zsets[CRON_JOBS_INDEX_KEY]), ["metric"])
 
+    def test_register_same_id_preserves_existing_next_enqueue_time(self):
+        redis = MemoryRedis()
+        scheduler = RedisCronScheduler(redis)
+        scheduler.register(
+            sample_task, "default", id="metric", args=(1,), cron="*/5 * * * *"
+        )
+        first = RedisCronJob.fetch("metric", redis)
+        first.latest_enqueue_time = now() - timedelta(hours=1)
+        first.next_enqueue_time = now() + timedelta(minutes=4)
+        first.save()
+
+        scheduler.register(
+            sample_task, "default", id="metric", args=(1,), cron="*/5 * * * *"
+        )
+
+        edited = RedisCronJob.fetch("metric", redis)
+        self.assertEqual(edited.latest_enqueue_time, first.latest_enqueue_time)
+        self.assertEqual(edited.next_enqueue_time, first.next_enqueue_time)
+        self.assertGreater(redis.zsets[CRON_JOBS_INDEX_KEY]["metric"], time.time())
+
     def test_register_without_id_generates_unique_job_ids(self):
         redis = MemoryRedis()
         scheduler = RedisCronScheduler(redis)
